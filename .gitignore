@@ -1,0 +1,4 @@
+*.tmp
+*.zip
+*.log
+.DS_Store
