@@ -163,21 +163,29 @@ download_and_extract_core() {
         auth_header=(-H "Authorization: token $GITHUB_TOKEN")
     fi
 
-    local core_url=""
+    local core_urls=()
     if [[ "$arch" == "x86_64" || "$arch" == "amd64" ]]; then
-        core_url="https://github.com/TacTic-A/NoraTunnel/releases/download/v3.0.0/noratunnel-x86_64-unknown-linux-gnu.zip"
+        core_urls=(
+            "https://github.com/TacTic-A/NoraTunnel/releases/download/v3.0.0/noratunnel-core-linux-x86_64.zip"
+            "https://github.com/TacTic-A/NoraTunnel/releases/download/v3.0.0/noratunnel-x86_64-unknown-linux-gnu.zip"
+        )
     elif [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
-        core_url="https://github.com/TacTic-A/NoraTunnel/releases/download/v3.0.0/noratunnel-aarch64-unknown-linux-musl.zip"
+        core_urls=(
+            "https://github.com/TacTic-A/NoraTunnel/releases/download/v3.0.0/noratunnel-core-linux-aarch64.zip"
+            "https://github.com/TacTic-A/NoraTunnel/releases/download/v3.0.0/noratunnel-aarch64-unknown-linux-musl.zip"
+        )
     fi
 
-    if [[ -n "$core_url" ]]; then
+    for core_url in "${core_urls[@]}"; do
         echo -e "Downloading from: ${YELLOW}$core_url${NC}"
         if curl -sSL "${auth_header[@]}" --max-time 60 -o "$tmp_dir/core.zip" "$core_url"; then
             if unzip -tq "$tmp_dir/core.zip" &>/dev/null; then
                 downloaded=1
+                break
             fi
         fi
-    fi
+    done
+
 
     if [[ $downloaded -eq 0 ]]; then
         colorize red "Failed to download NoraTunnel core. Please verify network access." bold
