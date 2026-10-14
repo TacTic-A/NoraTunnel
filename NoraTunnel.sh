@@ -1309,6 +1309,42 @@ display_main_menu() {
     echo -e "${DARK_GRAY}╰─────────────────────────────────────────────────────────────────╯${NC}"
 }
 
+update_system_menu() {
+    clear
+    colorize cyan "================ REINSTALL / UPDATE SYSTEM ================" bold
+    echo
+    echo " 1) Reinstall / Update Core Engine Binary"
+    echo " 2) Update NoraTunnel Management Script"
+    echo " 0) Return"
+    echo
+    read -p "Enter choice [0-2]: " u_opt
+    case "$u_opt" in
+        1)
+            rm -f "$CORE_BIN"
+            download_and_extract_core
+            press_key
+            ;;
+        2)
+            echo -e "${YELLOW}Downloading latest NoraTunnel script from repository...${NC}"
+            local auth_hdr=()
+            if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+                auth_hdr=(-H "Authorization: token $GITHUB_TOKEN")
+            fi
+            if curl -sSL "${auth_hdr[@]}" --max-time 30 -o "$SCRIPT_INSTALL_PATH" "https://raw.githubusercontent.com/TacTic-A/NoraTunnel/main/NoraTunnel.sh"; then
+                chmod +x "$SCRIPT_INSTALL_PATH"
+                colorize green "NoraTunnel script updated successfully!" bold
+                echo -e "Restarting with latest version..."
+                sleep 1
+                exec bash "$SCRIPT_INSTALL_PATH"
+            else
+                colorize red "Failed to download update. Check network connectivity." bold
+                press_key
+            fi
+            ;;
+        *) return 0 ;;
+    esac
+}
+
 main() {
     install_dependencies
     install_cli_shortcut
@@ -1327,7 +1363,7 @@ main() {
             5) manage_watchdog_menu ;;
             6) backup_restore_menu ;;
             7) optimize_network_and_system ;;
-            8) download_and_extract_core ;;
+            8) update_system_menu ;;
             9) remove_all_noratunnel ;;
             0) clear; exit 0 ;;
             *) colorize red "Invalid option!" && sleep 1 ;;
