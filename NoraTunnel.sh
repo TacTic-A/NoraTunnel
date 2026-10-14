@@ -112,10 +112,14 @@ install_dependencies() {
 install_cli_shortcut() {
     local current_script
     current_script=$(realpath "$0" 2>/dev/null || echo "$0")
-    if [[ -f "$current_script" && "$current_script" != "$SCRIPT_INSTALL_PATH" ]]; then
-        mkdir -p /usr/local/bin
-        cp -f "$current_script" "$SCRIPT_INSTALL_PATH" 2>/dev/null && chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null || true
+    if [[ -f "$current_script" ]]; then
+        mkdir -p /usr/local/bin /usr/bin
+        if [[ "$current_script" != "$SCRIPT_INSTALL_PATH" ]]; then
+            cp -f "$current_script" "$SCRIPT_INSTALL_PATH" 2>/dev/null && chmod +x "$SCRIPT_INSTALL_PATH" 2>/dev/null || true
+        fi
         ln -sf "$SCRIPT_INSTALL_PATH" /usr/local/bin/nora 2>/dev/null || true
+        ln -sf "$SCRIPT_INSTALL_PATH" /usr/bin/nora 2>/dev/null || true
+        ln -sf "$SCRIPT_INSTALL_PATH" /usr/bin/noratunnel 2>/dev/null || true
     fi
 }
 
@@ -262,13 +266,17 @@ open_firewall_port() {
     local proto="${2:-tcp}"
     if [[ -z "$port" ]]; then return 0; fi
 
-    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -qi "Status: active"; then
         ufw allow "${port}/${proto}" >/dev/null 2>&1
-        colorize green "[FIREWALL] Port ${port}/${proto} opened in UFW."
+        colorize green "[FIREWALL] Port ${port}/${proto} allowed in UFW."
     elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld 2>/dev/null; then
         firewall-cmd --quiet --permanent --add-port="${port}/${proto}" 2>/dev/null
         firewall-cmd --quiet --reload 2>/dev/null
-        colorize green "[FIREWALL] Port ${port}/${proto} opened in Firewalld."
+        colorize green "[FIREWALL] Port ${port}/${proto} allowed in Firewalld."
+    elif command -v iptables &>/dev/null; then
+        if ! iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; then
+            iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || true
+        fi
     fi
 }
 
@@ -938,10 +946,12 @@ systemctl restart $s_name
 EOF
     chmod +x "$script_path"
 
-    crontab -l 2>/dev/null | grep -v "#$s_name" > /tmp/noracron.tmp || true
-    echo "$cron_time $script_path #$s_name" >> /tmp/noracron.tmp
-    crontab /tmp/noracron.tmp
-    rm -f /tmp/noracron.tmp
+    local tmp_cron
+    tmp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "#$s_name" > "$tmp_cron" || true
+    echo "$cron_time $script_path #$s_name" >> "$tmp_cron"
+    crontab "$tmp_cron"
+    rm -f "$tmp_cron"
 
     colorize green "Scheduled restart configured cleanly for $s_name." bold
     press_key
@@ -1144,7 +1154,13 @@ backup_restore_menu() {
             local backup_tar="/root/noratunnel_backup_${timestamp}.tar.gz"
 
             mkdir -p "$CONFIG_DIR"
-            if tar -czf "$backup_tar" -C / root/noratunnel-core etc/systemd/system/noratunnel* 2>/dev/null; then
+            local backup_items=("root/noratunnel-core")
+            for sf in /etc/systemd/system/noratunnel*.service; do
+                if [[ -f "$sf" ]]; then
+                    backup_items+=("etc/systemd/system/$(basename "$sf")")
+                fi
+            done
+            if tar -czf "$backup_tar" -C / "${backup_items[@]}" 2>/dev/null; then
                 colorize green "Backup archive created successfully:" bold
                 echo -e " Archive Path: ${YELLOW}${backup_tar}${NC}"
                 echo -e " Archive Size: $(du -h "$backup_tar" 2>/dev/null | cut -f1)"
