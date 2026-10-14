@@ -17,7 +17,7 @@ use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{self, copy_bidirectional_with_sizes, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{self, copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time;
@@ -657,7 +657,7 @@ async fn run_tcp_connection_pool<T: Transport>(
             if let Some(mut ch) = data_ch_rx.recv().await {
                 if ch.write_all(&cmd).await.is_ok() {
                     tokio::spawn(async move {
-                        let _ = copy_bidirectional_with_sizes(&mut ch, &mut visitor, 65536, 65536).await;
+                        let _ = copy_bidirectional(&mut ch, &mut visitor).await;
                     });
                     break;
                 } else {
