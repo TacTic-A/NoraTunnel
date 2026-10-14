@@ -1,0 +1,75 @@
+name: Build NoraTunnel Core
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'build.rs'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset_name: noratunnel-core-linux-x86_64.zip
+            cross: false
+            features: ""
+          - target: aarch64-unknown-linux-musl
+            asset_name: noratunnel-core-linux-aarch64.zip
+            cross: true
+            features: "--features embedded --no-default-features"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Dependencies
+        if: matrix.cross == false
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config zip
+
+      - name: Install Cross
+        if: matrix.cross == true
+        uses: taiki-e/install-action@cross
+
+      - name: Build with Cargo
+        if: matrix.cross == false
+        run: |
+          cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
+          cp target/${{ matrix.target }}/release/noratunnel target/${{ matrix.target }}/release/noratunnel-core
+          strip target/${{ matrix.target }}/release/noratunnel-core || true
+          cd target/${{ matrix.target }}/release
+          zip -9 ${{ matrix.asset_name }} noratunnel-core
+
+      - name: Build with Cross
+        if: matrix.cross == true
+        run: |
+          cross build --release --target ${{ matrix.target }} ${{ matrix.features }}
+          cp target/${{ matrix.target }}/release/noratunnel target/${{ matrix.target }}/release/noratunnel-core
+          sudo apt-get update && sudo apt-get install -y zip
+          cd target/${{ matrix.target }}/release
+          zip -9 ${{ matrix.asset_name }} noratunnel-core
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload v3.0.0 target/${{ matrix.target }}/release/${{ matrix.asset_name }} --clobber
