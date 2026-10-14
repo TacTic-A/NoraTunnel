@@ -416,6 +416,7 @@ EOF
     if [[ "$transport_type" == "noise" ]]; then
         cat << EOF >> "$config_file"
 [server.transport.noise]
+# remote_public_key = "$noise_pub_key"
 local_private_key = "$noise_priv_key"
 
 EOF
@@ -471,18 +472,30 @@ EOF
     clear
     echo -e "${GREEN}┌── 🚀 NoraTunnel IRAN Server Configured Successfully!${NC}"
     echo -e "${GREEN}│${NC}"
-    echo -e "${GREEN}│${NC}  ${WHITE}Tunnel Port:${NC}        ${YELLOW}${tunnel_port}${NC}"
-    echo -e "${GREEN}│${NC}  ${WHITE}Security Token:${NC}     ${YELLOW}${token}${NC}"
-    echo -e "${GREEN}│${NC}  ${WHITE}Forwarded Ports:${NC}    ${GREEN}${valid_ports[*]}${NC}"
-    echo -e "${GREEN}│${NC}  ${WHITE}Service Type:${NC}       ${MAGENTA}${transport^^}${NC}"
     echo -e "${GREEN}│${NC}  ${WHITE}Public Server IP:${NC}   ${YELLOW}${SERVER_IP}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Tunnel Port:${NC}        ${YELLOW}${tunnel_port}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Transport Layer:${NC}    ${CYAN}${transport_type^^}${NC}"
+    if [[ "$transport_type" == "noise" ]]; then
+        echo -e "${GREEN}│${NC}  ${WHITE}Noise Public Key:${NC}   ${MAGENTA}${noise_pub_key}${NC}"
+    fi
+    echo -e "${GREEN}│${NC}  ${WHITE}Security Token:${NC}     ${YELLOW}${token}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Forwarded Ports:${NC}    ${GREEN}${valid_ports[*]} (${transport^^})${NC}"
     echo -e "${GREEN}│${NC}"
     echo -e "${GREEN}├── INSTRUCTIONS FOR KHAREJ SERVER ──────────────────────────────${NC}"
     echo -e "${GREEN}│${NC}  ${YELLOW}1.${NC} Run NoraTunnel on your Kharej server."
     echo -e "${GREEN}│${NC}  ${YELLOW}2.${NC} Select: ${BOLD}Configure a new tunnel -> Kharej server${NC}"
-    echo -e "${GREEN}│${NC}  ${YELLOW}3.${NC} Enter Iran Server IP: ${GREEN}${SERVER_IP}${NC}"
-    echo -e "${GREEN}│${NC}  ${YELLOW}4.${NC} Enter Tunnel Port:    ${GREEN}${tunnel_port}${NC}"
-    echo -e "${GREEN}│${NC}  ${YELLOW}5.${NC} Enter Token:          ${GREEN}${token}${NC}"
+    echo -e "${GREEN}│${NC}  ${YELLOW}3.${NC} Enter Iran Server IP:   ${GREEN}${SERVER_IP}${NC}"
+    echo -e "${GREEN}│${NC}  ${YELLOW}4.${NC} Enter Tunnel Port:      ${GREEN}${tunnel_port}${NC}"
+    if [[ "$transport_type" == "noise" ]]; then
+        echo -e "${GREEN}│${NC}  ${YELLOW}5.${NC} Select Transport:       ${CYAN}1 (Noise Protocol)${NC}"
+        echo -e "${GREEN}│${NC}  ${YELLOW}6.${NC} Enter Noise Public Key: ${MAGENTA}${noise_pub_key}${NC}"
+        echo -e "${GREEN}│${NC}  ${YELLOW}7.${NC} Enter Security Token:   ${GREEN}${token}${NC}"
+        echo -e "${GREEN}│${NC}  ${YELLOW}8.${NC} Enter Bridge Ports:     ${GREEN}${valid_ports[*]}${NC}"
+    else
+        echo -e "${GREEN}│${NC}  ${YELLOW}5.${NC} Select Transport:       ${CYAN}2 (Plain TCP)${NC}"
+        echo -e "${GREEN}│${NC}  ${YELLOW}6.${NC} Enter Security Token:   ${GREEN}${token}${NC}"
+        echo -e "${GREEN}│${NC}  ${YELLOW}7.${NC} Enter Bridge Ports:     ${GREEN}${valid_ports[*]}${NC}"
+    fi
     echo -e "${GREEN}└────────────────────────────────────────────────────────────────${NC}"
     press_key
 }
@@ -532,8 +545,11 @@ kharej_server_configuration() {
         read -r nodelay_in
         if [[ "$nodelay_in" == "false" ]]; then nodelay="false"; fi
     else
+        echo
+        colorize cyan ">> Step 1/2: Obfuscation Key" bold
+        echo -e "${GRAY}(Copy & paste the 'Noise Public Key' from your Iran server summary)${NC}"
         while true; do
-            echo -ne "[*] Noise Public Key (from Iran server summary): "
+            echo -ne "[*] Noise Public Key: "
             read -r noise_pub_key
             noise_pub_key=$(echo "$noise_pub_key" | tr -d ' \r\n')
             if [[ -n "$noise_pub_key" ]]; then break; fi
@@ -554,10 +570,13 @@ kharej_server_configuration() {
     if [[ "$trans_in" == "udp" ]]; then transport="udp"; fi
 
     echo
+    colorize cyan ">> Step 2/2: Service Authentication" bold
+    echo -e "${GRAY}(Copy & paste the 'Security Token' from your Iran server summary)${NC}"
     local token=""
     while true; do
-        echo -ne "[*] Security Token (Must match token from Iran server): "
+        echo -ne "[*] Security Token: "
         read -r token
+        token=$(echo "$token" | tr -d ' \r\n')
         if [[ -n "$token" ]]; then break; fi
         colorize red "[!] Security token cannot be empty."
     done
@@ -704,6 +723,24 @@ find_active_configs() {
     done
 }
 
+get_tunnel_public_key() {
+    local cfg="$1"
+    local pub
+    pub=$(grep '# remote_public_key' "$cfg" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+    if [[ -n "$pub" ]]; then
+        echo "$pub"
+        return 0
+    fi
+    local priv
+    priv=$(grep 'local_private_key' "$cfg" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+    if [[ -n "$priv" ]]; then
+        pub=$((printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20'; echo -n "$priv" | base64 -d) | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64)
+        echo "$pub"
+        return 0
+    fi
+    return 1
+}
+
 check_tunnel_status() {
     clear
     find_active_configs
@@ -720,7 +757,6 @@ check_tunnel_status() {
         fname=$(basename "$cfg" .toml)
         local s_name="noratunnel-${fname}.service"
 
-
         local role="Iran"
         local port="${fname#iran}"
         if [[ "$fname" =~ ^kharej ]]; then
@@ -729,11 +765,19 @@ check_tunnel_status() {
         fi
 
         local t_layer="TCP"
+        local pub_key=""
         if grep -q 'type = "noise"' "$cfg" 2>/dev/null; then
-            t_layer="${GREEN}Noise Protocol (Obfuscated & Encrypted)${NC}"
+            t_layer="${GREEN}Noise Protocol (Obfuscated)${NC}"
+            pub_key=$(get_tunnel_public_key "$cfg")
         else
             t_layer="${YELLOW}Plain TCP${NC}"
         fi
+
+        local tok
+        tok=$(grep 'default_token' "$cfg" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+
+        local ports_str
+        ports_str=$(grep -E '^\[' "$cfg" 2>/dev/null | grep -E '\.services\.' | sed -E 's/.*\.services\.([0-9]+).*/\1/' | tr '\n' ' ')
 
         local svc_state="${GREEN}● Active (Running)${NC}"
         if ! systemctl is-active --quiet "$s_name"; then
@@ -746,9 +790,18 @@ check_tunnel_status() {
         fi
 
         echo -e "${DARK_GRAY}┌── ${BOLD}${role} Server Tunnel${NC} ${GRAY}(Port: ${YELLOW}${port}${GRAY})${NC}"
-        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Security:${NC}  $t_layer"
-        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Daemon:${NC}    $svc_state"
-        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Network:${NC}   $net_state"
+        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Security:${NC}      $t_layer"
+        if [[ -n "$pub_key" && "$role" == "Iran" ]]; then
+            echo -e "${DARK_GRAY}│${NC}  ${WHITE}Noise PubKey:${NC}  ${MAGENTA}${pub_key}${NC}"
+        fi
+        if [[ -n "$tok" ]]; then
+            echo -e "${DARK_GRAY}│${NC}  ${WHITE}Token:${NC}         ${YELLOW}${tok}${NC}"
+        fi
+        if [[ -n "$ports_str" ]]; then
+            echo -e "${DARK_GRAY}│${NC}  ${WHITE}Ports:${NC}         ${CYAN}${ports_str}${NC}"
+        fi
+        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Daemon:${NC}        $svc_state"
+        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Network:${NC}       $net_state"
         echo -e "${DARK_GRAY}└────────────────────────────────────────────────────────────────${NC}"
     done
     press_key
@@ -805,9 +858,10 @@ tunnel_management() {
     colorize blue    " 6) View live active connections on this tunnel"
     echo -e " 7) View live service logs (journalctl)"
     echo -e " 8) View service status (systemctl)"
+    echo -e " 9) View tunnel credentials & details (Token, Keys, Ports)"
     echo -e " 0) Return"
     echo
-    read -p "Enter choice [0-8]: " sub_choice
+    read -p "Enter choice [0-9]: " sub_choice
     case $sub_choice in
         1) destroy_tunnel "$selected_cfg" "$s_name" ;;
         2) restart_tunnel_service "$s_name" ;;
@@ -820,9 +874,57 @@ tunnel_management() {
             ;;
         7) journalctl -u "$s_name" -n 50 --no-pager; press_key ;;
         8) systemctl status "$s_name"; press_key ;;
+        9) view_tunnel_details "$selected_cfg" "$s_name" ;;
         0) return 0 ;;
         *) colorize red "Invalid option!" && sleep 1 ;;
     esac
+}
+
+view_tunnel_details() {
+    local cfg="$1"
+    local s_name="$2"
+    local fname
+    fname=$(basename "$cfg" .toml)
+
+    local role="Iran"
+    local port="${fname#iran}"
+    if [[ "$fname" =~ ^kharej ]]; then
+        role="Kharej"
+        port="${fname#kharej}"
+    fi
+
+    local t_layer="Plain TCP"
+    local pub_key=""
+    if grep -q 'type = "noise"' "$cfg" 2>/dev/null; then
+        t_layer="Noise Protocol (Obfuscated & Encrypted)"
+        pub_key=$(get_tunnel_public_key "$cfg")
+    fi
+
+    local tok
+    tok=$(grep 'default_token' "$cfg" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+
+    local ports_str
+    ports_str=$(grep -E '^\[' "$cfg" 2>/dev/null | grep -E '\.services\.' | sed -E 's/.*\.services\.([0-9]+).*/\1/' | tr '\n' ' ')
+
+    clear
+    echo -e "${CYAN}┌── 📋 Tunnel Credentials & Configuration Details${NC}"
+    echo -e "${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${WHITE}Tunnel Role:${NC}       ${role} Server"
+    echo -e "${CYAN}│${NC}  ${WHITE}Tunnel Port:${NC}       ${YELLOW}${port}${NC}"
+    echo -e "${CYAN}│${NC}  ${WHITE}Transport Layer:${NC}   ${GREEN}${t_layer}${NC}"
+    if [[ -n "$pub_key" ]]; then
+        echo -e "${CYAN}│${NC}  ${WHITE}Noise Public Key:${NC}  ${MAGENTA}${pub_key}${NC}"
+    fi
+    if [[ -n "$tok" ]]; then
+        echo -e "${CYAN}│${NC}  ${WHITE}Security Token:${NC}    ${YELLOW}${tok}${NC}"
+    fi
+    if [[ -n "$ports_str" ]]; then
+        echo -e "${CYAN}│${NC}  ${WHITE}Forwarded Ports:${NC}   ${GREEN}${ports_str}${NC}"
+    fi
+    echo -e "${CYAN}│${NC}  ${WHITE}Systemd Service:${NC}   ${WHITE}${s_name}${NC}"
+    echo -e "${CYAN}│${NC}  ${WHITE}Config File:${NC}       ${GRAY}${cfg}${NC}"
+    echo -e "${CYAN}└────────────────────────────────────────────────────────────────${NC}"
+    press_key
 }
 
 destroy_tunnel() {
