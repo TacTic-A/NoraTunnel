@@ -237,14 +237,13 @@ display_hero_dashboard() {
     local loc_disp="${CYAN}${SERVER_COUNTRY:-Unknown}${NC}"
     local isp_disp="${PURPLE}${SERVER_ISP:-Unknown}${NC}"
 
-    echo -e "${DARK_GRAY}╭─────────────────────────────────────────────────────────────────╮${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${BLUE}⚡ NoraTunnel System v3.0${NC}       ${DIM}${GRAY}[High-Speed Reverse Bridge]${NC}  ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}├─────────────────────────────────────────────────────────────────┤${NC}"
-    printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "🌐 Public IP:" "$ip_disp"
-    printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "📍 Location:" "$loc_disp"
-    printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "🏢 Datacenter:" "$isp_disp"
-    printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "⚙️ Core Engine:" "$c_status"
-    echo -e "${DARK_GRAY}╰─────────────────────────────────────────────────────────────────╯${NC}"
+    echo -e "${DARK_GRAY}┌──${NC} ${BOLD}${BLUE}⚡ NoraTunnel System v3.0${NC}  ${DIM}${GRAY}[High-Speed Reverse Bridge]${NC}"
+    echo -e "${DARK_GRAY}│${NC}"
+    echo -e "${DARK_GRAY}│${NC}   ${WHITE}🌐 Public IP:${NC}    $ip_disp"
+    echo -e "${DARK_GRAY}│${NC}   ${WHITE}📍 Location:${NC}     $loc_disp"
+    echo -e "${DARK_GRAY}│${NC}   ${WHITE}🏢 Datacenter:${NC}   $isp_disp"
+    echo -e "${DARK_GRAY}│${NC}   ${WHITE}⚙️ Core Engine:${NC}  $c_status"
+    echo -e "${DARK_GRAY}└────────────────────────────────────────────────────────────────${NC}"
 }
 
 check_ipv6() {
@@ -470,22 +469,21 @@ EOF
     done
 
     clear
-    colorize green "============================================================" bold
-    colorize green "        NoraTunnel IRAN Server Configured Successfully!      " bold
-    colorize green "============================================================" bold
-    echo -e " ${CYAN}Tunnel Port:${NC}        ${YELLOW}${tunnel_port}${NC}"
-    echo -e " ${CYAN}Security Token:${NC}     ${YELLOW}${token}${NC}"
-    echo -e " ${CYAN}Forwarded Ports:${NC}    ${GREEN}${valid_ports[*]}${NC}"
-    echo -e " ${CYAN}Service Type:${NC}       ${MAGENTA}${transport^^}${NC}"
-    echo -e " ${CYAN}Public Server IP:${NC}   ${YELLOW}${SERVER_IP}${NC}"
-    echo -e "\e[90m─────────────────────────────────────────────────────────────\e[0m"
-    colorize yellow ">> INSTRUCTIONS FOR KHAREJ SERVER:" bold
-    echo -e " 1. Run NoraTunnel on your Kharej server."
-    echo -e " 2. Select: ${BOLD}Configure a new tunnel -> Kharej server${NC}"
-    echo -e " 3. Enter Iran Server IP: ${GREEN}${SERVER_IP}${NC}"
-    echo -e " 4. Enter Tunnel Port:    ${GREEN}${tunnel_port}${NC}"
-    echo -e " 5. Enter Token:          ${GREEN}${token}${NC}"
-    colorize green "============================================================" bold
+    echo -e "${GREEN}┌── 🚀 NoraTunnel IRAN Server Configured Successfully!${NC}"
+    echo -e "${GREEN}│${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Tunnel Port:${NC}        ${YELLOW}${tunnel_port}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Security Token:${NC}     ${YELLOW}${token}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Forwarded Ports:${NC}    ${GREEN}${valid_ports[*]}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Service Type:${NC}       ${MAGENTA}${transport^^}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Public Server IP:${NC}   ${YELLOW}${SERVER_IP}${NC}"
+    echo -e "${GREEN}│${NC}"
+    echo -e "${GREEN}├── INSTRUCTIONS FOR KHAREJ SERVER ──────────────────────────────${NC}"
+    echo -e "${GREEN}│${NC}  ${YELLOW}1.${NC} Run NoraTunnel on your Kharej server."
+    echo -e "${GREEN}│${NC}  ${YELLOW}2.${NC} Select: ${BOLD}Configure a new tunnel -> Kharej server${NC}"
+    echo -e "${GREEN}│${NC}  ${YELLOW}3.${NC} Enter Iran Server IP: ${GREEN}${SERVER_IP}${NC}"
+    echo -e "${GREEN}│${NC}  ${YELLOW}4.${NC} Enter Tunnel Port:    ${GREEN}${tunnel_port}${NC}"
+    echo -e "${GREEN}│${NC}  ${YELLOW}5.${NC} Enter Token:          ${GREEN}${token}${NC}"
+    echo -e "${GREEN}└────────────────────────────────────────────────────────────────${NC}"
     press_key
 }
 
@@ -666,14 +664,13 @@ EOF
     done
 
     clear
-    echo -e "${GREEN}╭─────────────────────────────────────────────────────────────────╮${NC}"
-    echo -e "${GREEN}│${NC}    ${BOLD}${WHITE}🚀  NoraTunnel KHAREJ Client Started Successfully!${NC}           ${GREEN}│${NC}"
-    echo -e "${GREEN}├─────────────────────────────────────────────────────────────────┤${NC}"
-    printf "${GREEN}│${NC}  %-22s %-48b ${GREEN}│${NC}\n" "Target Iran Server:" "${YELLOW}${remote_addr_str}:${tunnel_port}${NC}"
-    printf "${GREEN}│${NC}  %-22s %-48b ${GREEN}│${NC}\n" "Transport Mode:" "${CYAN}${transport_type^^}${NC}"
-    printf "${GREEN}│${NC}  %-22s %-48b ${GREEN}│${NC}\n" "Bridged Ports:" "${WHITE}${valid_ports[*]}${NC}"
-    printf "${GREEN}│${NC}  %-22s %-48b ${GREEN}│${NC}\n" "Service Daemon:" "${GREEN}Active & Enabled on Boot${NC}"
-    echo -e "${GREEN}╰─────────────────────────────────────────────────────────────────╯${NC}"
+    echo -e "${GREEN}┌── 🚀 NoraTunnel KHAREJ Client Started Successfully!${NC}"
+    echo -e "${GREEN}│${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Target Iran Server:${NC}  ${YELLOW}${remote_addr_str}:${tunnel_port}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Transport Mode:${NC}      ${CYAN}${transport_type^^}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Bridged Ports:${NC}       ${WHITE}${valid_ports[*]}${NC}"
+    echo -e "${GREEN}│${NC}  ${WHITE}Service Daemon:${NC}      ${GREEN}Active & Enabled on Boot${NC}"
+    echo -e "${GREEN}└────────────────────────────────────────────────────────────────${NC}"
     press_key
 }
 
@@ -748,13 +745,11 @@ check_tunnel_status() {
             net_state="${YELLOW}Remote Bridge Mode${NC}"
         fi
 
-        echo -e "${DARK_GRAY}╭─────────────────────────────────────────────────────────────────╮${NC}"
-        printf "${DARK_GRAY}│${NC}  ${BOLD}%-10s${NC} Tunnel Port: ${YELLOW}%-40s${NC} ${DARK_GRAY}│${NC}\n" "$role" "$port"
-        echo -e "${DARK_GRAY}├─────────────────────────────────────────────────────────────────┤${NC}"
-        printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "Security:" "$t_layer"
-        printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "Daemon:" "$svc_state"
-        printf "${DARK_GRAY}│${NC}  %-14s %-56b ${DARK_GRAY}│${NC}\n" "Network:" "$net_state"
-        echo -e "${DARK_GRAY}╰─────────────────────────────────────────────────────────────────╯${NC}"
+        echo -e "${DARK_GRAY}┌── ${BOLD}${role} Server Tunnel${NC} ${GRAY}(Port: ${YELLOW}${port}${GRAY})${NC}"
+        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Security:${NC}  $t_layer"
+        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Daemon:${NC}    $svc_state"
+        echo -e "${DARK_GRAY}│${NC}  ${WHITE}Network:${NC}   $net_state"
+        echo -e "${DARK_GRAY}└────────────────────────────────────────────────────────────────${NC}"
     done
     press_key
 }
@@ -1293,20 +1288,22 @@ display_main_menu() {
     clear
     display_hero_dashboard
     echo
-    echo -e "${DARK_GRAY}╭─── CORE TUNNELING ──────────────────────────────────────────────╮${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${BLUE}[ 1 ]${NC} ${WHITE}Configure a New Tunnel${NC}      ${GRAY}Setup Iran or Kharej bridge${NC}    ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${CYAN}[ 2 ]${NC} ${WHITE}Tunnel Management Menu${NC}      ${GRAY}Ports, Restart, Logs, Cron${NC}     ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GREEN}[ 3 ]${NC} ${WHITE}Live Status Dashboard${NC}       ${GRAY}Inspect sockets & daemons${NC}      ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}├─── RELIABILITY & DIAGNOSTICS ───────────────────────────────────┤${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${YELLOW}[ 4 ]${NC} ${WHITE}Test Latency & Reachability${NC} ${GRAY}Measure TCP RTT & packet loss${NC}  ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${PURPLE}[ 5 ]${NC} ${WHITE}Smart Watchdog Recovery${NC}     ${GRAY}Auto-healing background daemon${NC} ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${BLUE}[ 6 ]${NC} ${WHITE}Backup & Restore Profiles${NC}   ${GRAY}Export/Import tar.gz archive${NC}   ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}├─── PERFORMANCE & SYSTEM ────────────────────────────────────────┤${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GREEN}[ 7 ]${NC} ${WHITE}Kernel & Network Tuning${NC}     ${GRAY}Google BBR & 1M socket limits${NC}  ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${CYAN}[ 8 ]${NC} ${WHITE}Reinstall / Update Core${NC}     ${GRAY}Verify engine binary integrity${NC} ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${RED}[ 9 ]${NC} ${WHITE}Uninstall NoraTunnel${NC}        ${GRAY}Purge all profiles & services${NC}  ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GRAY}[ 0 ]${NC} ${WHITE}Exit Dashboard${NC}                                            ${DARK_GRAY}│${NC}"
-    echo -e "${DARK_GRAY}╰─────────────────────────────────────────────────────────────────╯${NC}"
+    echo -e "${DARK_GRAY}┌── CORE TUNNELING ──────────────────────────────────────────────${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${BLUE}[ 1 ]${NC}  ${WHITE}Configure a New Tunnel${NC}        ${GRAY}Setup Iran or Kharej bridge${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${CYAN}[ 2 ]${NC}  ${WHITE}Tunnel Management Menu${NC}        ${GRAY}Ports, Restart, Logs, Cron${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GREEN}[ 3 ]${NC}  ${WHITE}Live Status Dashboard${NC}         ${GRAY}Inspect sockets & daemons${NC}"
+    echo -e "${DARK_GRAY}│${NC}"
+    echo -e "${DARK_GRAY}├── RELIABILITY & DIAGNOSTICS ───────────────────────────────────${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${YELLOW}[ 4 ]${NC}  ${WHITE}Test Latency & Reachability${NC}   ${GRAY}Measure TCP RTT & packet loss${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${PURPLE}[ 5 ]${NC}  ${WHITE}Smart Watchdog Recovery${NC}       ${GRAY}Auto-healing background daemon${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${BLUE}[ 6 ]${NC}  ${WHITE}Backup & Restore Profiles${NC}     ${GRAY}Export/Import tar.gz archive${NC}"
+    echo -e "${DARK_GRAY}│${NC}"
+    echo -e "${DARK_GRAY}├── PERFORMANCE & SYSTEM ────────────────────────────────────────${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GREEN}[ 7 ]${NC}  ${WHITE}Kernel & Network Tuning${NC}       ${GRAY}Google BBR & 1M socket limits${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${CYAN}[ 8 ]${NC}  ${WHITE}Reinstall / Update Core${NC}       ${GRAY}Verify engine binary integrity${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${RED}[ 9 ]${NC}  ${WHITE}Uninstall NoraTunnel${NC}          ${GRAY}Purge all profiles & services${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GRAY}[ 0 ]${NC}  ${WHITE}Exit Dashboard${NC}"
+    echo -e "${DARK_GRAY}└────────────────────────────────────────────────────────────────${NC}"
 }
 
 update_system_menu() {
