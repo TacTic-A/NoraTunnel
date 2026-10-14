@@ -35,7 +35,7 @@ GRAY='\033[38;5;242m'
 DARK_GRAY='\033[38;5;238m'
 WHITE='\033[38;5;255m'
 BG_BLUE='\033[48;5;24m'
-MAGENTA='\033[38;5;177m
+MAGENTA='\033[38;5;177m'
 
 press_key(){
     echo
