@@ -348,8 +348,25 @@ iran_server_configuration() {
         download_and_extract_core "silent"
         local keygen_out
         keygen_out=$("$CORE_BIN" --genkey 2>/dev/null)
-        noise_priv_key=$(echo "$keygen_out" | grep -i "Private Key" | awk -F': ' '{print $2}' | tr -d ' \r\n')
-        noise_pub_key=$(echo "$keygen_out" | grep -i "Public Key" | awk -F': ' '{print $2}' | tr -d ' \r\n')
+        noise_priv_key=$(echo "$keygen_out" | awk '/[Pp]rivate [Kk]ey/{ if ($NF ~ /^[A-Za-z0-9+\/=]{40,50}$/) print $NF; else { getline; print $1 } }' | tr -d ' \r\n')
+        noise_pub_key=$(echo "$keygen_out" | awk '/[Pp]ublic [Kk]ey/{ if ($NF ~ /^[A-Za-z0-9+\/=]{40,50}$/) print $NF; else { getline; print $1 } }' | tr -d ' \r\n')
+
+        # Fallback 1: Derive public key from private key if needed
+        if [[ -n "$noise_priv_key" && -z "$noise_pub_key" ]]; then
+            noise_pub_key=$((printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20'; echo -n "$noise_priv_key" | base64 -d) | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64)
+        fi
+
+        # Fallback 2: Generate via OpenSSL if binary failed to produce keys
+        if [[ -z "$noise_priv_key" || -z "$noise_pub_key" ]]; then
+            local tmp_key="/tmp/noratunnel_x25519_$$.key"
+            openssl genpkey -algorithm X25519 -out "$tmp_key" 2>/dev/null
+            if [[ -f "$tmp_key" ]]; then
+                noise_priv_key=$(openssl pkey -in "$tmp_key" -outform DER 2>/dev/null | tail -c 32 | base64)
+                noise_pub_key=$(openssl pkey -in "$tmp_key" -pubout -outform DER 2>/dev/null | tail -c 32 | base64)
+                rm -f "$tmp_key"
+            fi
+        fi
+
         colorize green "[+] Generated X25519 Noise Cryptographic Keypair for Obfuscation." bold
     fi
 
