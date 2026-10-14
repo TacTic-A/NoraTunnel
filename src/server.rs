@@ -17,7 +17,7 @@ use rand::RngCore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{self, copy_bidirectional, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{self, copy_bidirectional_with_sizes, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time;
@@ -33,8 +33,8 @@ use crate::transport::WebsocketTransport;
 type ServiceDigest = protocol::Digest; // SHA256 of a service name
 type Nonce = protocol::Digest; // Also called `session_key`
 
-const TCP_POOL_SIZE: usize = 8; // The number of cached connections for TCP servies
-const UDP_POOL_SIZE: usize = 2; // The number of cached connections for UDP services
+const TCP_POOL_SIZE: usize = 16; // The number of cached connections for TCP services
+const UDP_POOL_SIZE: usize = 4; // The number of cached connections for UDP services
 const CHAN_SIZE: usize = 2048; // The capacity of various chans
 const HANDSHAKE_TIMEOUT: u64 = 5; // Timeout for transport handshake
 
@@ -514,6 +514,21 @@ impl<T: Transport> ControlChannel<T> {
         let create_ch_cmd = bincode::serialize(&ControlChannelCmd::CreateDataChannel).unwrap();
         let heartbeat = bincode::serialize(&ControlChannelCmd::HeartBeat).unwrap();
 
+        // Helper to calculate jittered heartbeat interval for DPI resistance (+/- 15% random variance)
+        let get_heartbeat_duration = |interval: u64| -> Duration {
+            if interval == 0 {
+                return Duration::from_secs(0);
+            }
+            let base_ms = interval * 1000;
+            let jitter_range = (base_ms as f64 * 0.15) as u64;
+            let offset = if jitter_range > 0 {
+                rand::random::<u64>() % (jitter_range * 2 + 1)
+            } else {
+                0
+            };
+            Duration::from_millis(base_ms - jitter_range + offset)
+        };
+
         // Wait for data channel requests and the shutdown signal
         loop {
             tokio::select! {
@@ -530,7 +545,7 @@ impl<T: Transport> ControlChannel<T> {
                         }
                     }
                 },
-                _ = time::sleep(Duration::from_secs(self.heartbeat_interval)), if self.heartbeat_interval != 0 => {
+                _ = time::sleep(get_heartbeat_duration(self.heartbeat_interval)), if self.heartbeat_interval != 0 => {
                             if let Err(e) = self.write_and_flush(&heartbeat).await {
                                 error!("{:#}", e);
                                 break;
@@ -642,7 +657,7 @@ async fn run_tcp_connection_pool<T: Transport>(
             if let Some(mut ch) = data_ch_rx.recv().await {
                 if ch.write_all(&cmd).await.is_ok() {
                     tokio::spawn(async move {
-                        let _ = copy_bidirectional(&mut ch, &mut visitor).await;
+                        let _ = copy_bidirectional_with_sizes(&mut ch, &mut visitor, 65536, 65536).await;
                     });
                     break;
                 } else {

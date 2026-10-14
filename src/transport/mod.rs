@@ -11,8 +11,8 @@ use tracing::{error, trace};
 
 pub const DEFAULT_NODELAY: bool = true;
 
-pub const DEFAULT_KEEPALIVE_SECS: u64 = 20;
-pub const DEFAULT_KEEPALIVE_INTERVAL: u64 = 8;
+pub const DEFAULT_KEEPALIVE_SECS: u64 = 15;
+pub const DEFAULT_KEEPALIVE_INTERVAL: u64 = 5;
 
 #[derive(Clone)]
 pub struct AddrMaybeCached {
@@ -143,25 +143,27 @@ impl SocketOpts {
     }
 
     pub fn apply(&self, conn: &TcpStream) {
-        if let Some(v) = self.keepalive {
-            let keepalive_duration = Duration::from_secs(v.keepalive_secs);
-            let keepalive_interval = Duration::from_secs(v.keepalive_interval);
+        let (keepalive_secs, keepalive_interval) = match self.keepalive {
+            Some(v) => (v.keepalive_secs, v.keepalive_interval),
+            None => (DEFAULT_KEEPALIVE_SECS, DEFAULT_KEEPALIVE_INTERVAL),
+        };
 
-            if let Err(e) = try_set_tcp_keepalive(conn, keepalive_duration, keepalive_interval)
-                .with_context(|| "Failed to set keepalive")
-            {
-                error!("{:#}", e);
-            }
+        let keepalive_duration = Duration::from_secs(keepalive_secs);
+        let keepalive_intvl = Duration::from_secs(keepalive_interval);
+
+        if let Err(e) = try_set_tcp_keepalive(conn, keepalive_duration, keepalive_intvl)
+            .with_context(|| "Failed to set keepalive")
+        {
+            error!("{:#}", e);
         }
 
-        if let Some(nodelay) = self.nodelay {
-            trace!("Set nodelay {}", nodelay);
-            if let Err(e) = conn
-                .set_nodelay(nodelay)
-                .with_context(|| "Failed to set nodelay")
-            {
-                error!("{:#}", e);
-            }
+        let nodelay = self.nodelay.unwrap_or(DEFAULT_NODELAY);
+        trace!("Set nodelay {}", nodelay);
+        if let Err(e) = conn
+            .set_nodelay(nodelay)
+            .with_context(|| "Failed to set nodelay")
+        {
+            error!("{:#}", e);
         }
     }
 }
