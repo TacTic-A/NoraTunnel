@@ -1186,15 +1186,119 @@ setup_watchdog_script() {
     cat << 'EOF' > "$WATCHDOG_SCRIPT"
 #!/bin/bash
 CONFIG_DIR="/root/noratunnel-core"
+LOG_TAG="NoraWatchdog"
+STATE_DIR="/run/noratunnel"
+mkdir -p "$STATE_DIR"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $LOG_TAG: $1"
+}
+
 for cfg in "$CONFIG_DIR"/iran*.toml "$CONFIG_DIR"/kharej*.toml; do
-    if [[ -f "$cfg" ]]; then
-        fname=$(basename "$cfg" .toml)
-        s_name="noratunnel-${fname}.service"
-        if systemctl is-enabled "$s_name" &>/dev/null; then
-            if ! systemctl is-active --quiet "$s_name"; then
-                echo "[$(date)] NoraWatchdog: $s_name is inactive. Reviving..."
-                systemctl restart "$s_name"
+    [[ -f "$cfg" ]] || continue
+    fname=$(basename "$cfg" .toml)
+    s_name="noratunnel-${fname}.service"
+
+    # Only monitor services that are enabled or active
+    if ! systemctl is-enabled "$s_name" &>/dev/null && ! systemctl is-active --quiet "$s_name"; then
+        continue
+    fi
+
+    # Level 1 Check: Process Crash Detection
+    if ! systemctl is-active --quiet "$s_name"; then
+        log "[ALERT] $s_name process is dead/inactive. Reviving immediately..."
+        systemctl restart "$s_name"
+        rm -f "${STATE_DIR}/${fname}.fail"
+        continue
+    fi
+
+    fail_counter_file="${STATE_DIR}/${fname}.fail"
+    current_fails=$(cat "$fail_counter_file" 2>/dev/null || echo 0)
+    [[ "$current_fails" =~ ^[0-9]+$ ]] || current_fails=0
+
+    is_healthy=1
+    reason=""
+
+    if [[ "$fname" =~ ^iran ]]; then
+        # ----------------- IRAN SERVER (REVERSE LISTENER) -----------------
+        tunnel_port="${fname#iran}"
+
+        # 1. Check if daemon is listening on the main tunnel port
+        if ! ss -tlnp 2>/dev/null | grep -q ":${tunnel_port} "; then
+            is_healthy=0
+            reason="Daemon not listening on tunnel port $tunnel_port"
+        else
+            # 2. Check established connections from Kharej client
+            conn_count=$(ss -Htn "sport = :$tunnel_port" state established 2>/dev/null | wc -l)
+            if [[ "$conn_count" -eq 0 ]]; then
+                is_healthy=0
+                reason="No active client connection established from Kharej on port $tunnel_port"
+            else
+                # 3. Check for zombie/blackholed TCP sockets with accumulated Send-Q
+                stuck_sendq=$(ss -Htn "sport = :$tunnel_port" state established 2>/dev/null | awk '$3 > 80000 {print $3}' | head -n1)
+                if [[ -n "$stuck_sendq" ]]; then
+                    is_healthy=0
+                    reason="Zombie TCP socket detected with stuck Send-Q ($stuck_sendq bytes) on port $tunnel_port"
+                fi
             fi
+        fi
+
+    elif [[ "$fname" =~ ^kharej ]]; then
+        # ----------------- KHAREJ SERVER (CLIENT DIALER) -----------------
+        tunnel_port="${fname#kharej}"
+
+        # Extract remote_addr (format: "IP:PORT" or "[IPv6]:PORT")
+        remote_addr_full=$(grep -E '^\s*remote_addr\s*=' "$cfg" 2>/dev/null | head -n1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+        remote_ip=$(echo "$remote_addr_full" | sed -E 's/:[0-9]+$//; s/^\[//; s/\]$//')
+        remote_port=$(echo "$remote_addr_full" | sed -E 's/.*:([0-9]+)$/\1/')
+
+        if [[ -n "$remote_ip" && -n "$remote_port" ]]; then
+            # 1. Test reachability to Iran server via direct TCP handshake
+            if timeout 3 bash -c "</dev/tcp/${remote_ip}/${remote_port}" 2>/dev/null; then
+                # Iran server port is reachable. Now verify if our tunnel client has an active connection
+                conn_count=$(ss -Htn "dst ${remote_ip}:${remote_port}" state established 2>/dev/null | wc -l)
+                if [[ "$conn_count" -eq 0 ]]; then
+                    is_healthy=0
+                    reason="Iran ($remote_ip:$remote_port) is reachable, but noratunnel has NO established connection (stalled daemon)"
+                else
+                    # 2. Check for zombie socket with stuck Send-Q
+                    stuck_sendq=$(ss -Htn "dst ${remote_ip}:${remote_port}" state established 2>/dev/null | awk '$3 > 80000 {print $3}' | head -n1)
+                    if [[ -n "$stuck_sendq" ]]; then
+                        is_healthy=0
+                        reason="Connection to Iran has stuck un-ACKed Send-Q ($stuck_sendq bytes)"
+                    fi
+                fi
+            else
+                log "Iran server ${remote_ip}:${remote_port} unreachable via TCP. Network down, skipping restart to prevent flapping."
+            fi
+        fi
+
+        # 3. Check recent logs for persistent heartbeat timeout loops without successful recovery
+        recent_hb_errs=$(journalctl -u "$s_name" -n 15 --no-pager 2>/dev/null | grep -iE "heartbeat timed out|failed to run the control channel" | wc -l)
+        recent_ok=$(journalctl -u "$s_name" -n 5 --no-pager 2>/dev/null | grep -i "control channel established" | wc -l)
+        if [[ "$recent_hb_errs" -ge 3 && "$recent_ok" -eq 0 ]]; then
+            is_healthy=0
+            reason="Recent logs indicate continuous control channel timeout loop without recovery"
+        fi
+    fi
+
+    # ----------------- HEALTH DECISION & SELF-HEALING -----------------
+    if [[ "$is_healthy" -eq 0 ]]; then
+        current_fails=$(( current_fails + 1 ))
+        echo "$current_fails" > "$fail_counter_file"
+        log "[WARNING] $s_name health check failed ($current_fails/2): $reason"
+
+        # Require 2 consecutive failed cycles (45s * 2 = 90s) before restarting to avoid false positives on transient blips
+        if [[ "$current_fails" -ge 2 ]]; then
+            log "[HEALING] $s_name failed 2 consecutive health checks. Forcefully restarting service to revive tunnel..."
+            systemctl restart "$s_name"
+            echo 0 > "$fail_counter_file"
+            sleep 2
+        fi
+    else
+        if [[ "$current_fails" -gt 0 ]]; then
+            echo 0 > "$fail_counter_file"
+            log "[RECOVERED] $s_name is verified healthy and active."
         fi
     fi
 done
