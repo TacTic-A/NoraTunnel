@@ -15,23 +15,74 @@ use crate::transport::AddrMaybeCached;
 // Tokio hesitates to expose this option...So we have to do it on our own :(
 // The good news is that using socket2 it can be easily done, without losing portability.
 // See https://github.com/tokio-rs/tokio/issues/3082
+pub const DEFAULT_TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(10);
+pub const DEFAULT_TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(3);
+pub const DEFAULT_TCP_KEEPALIVE_RETRIES: u32 = 3;
+
+/// Set TCP keepalive parameters including time, interval, and retry count (probes).
+/// On platforms supporting TCP_KEEPCNT (Linux, BSD, Apple), retries are configured.
+/// On Windows, time and interval are configured via SIO_KEEPALIVE_VALS.
+pub fn try_set_tcp_keepalive_with_probes(
+    conn: &TcpStream,
+    keepalive_duration: Duration,
+    keepalive_interval: Duration,
+    retries: u32,
+) -> Result<()> {
+    let s = SockRef::from(conn);
+    #[allow(unused_mut)]
+    let mut keepalive = TcpKeepalive::new()
+        .with_time(keepalive_duration)
+        .with_interval(keepalive_interval);
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "dragonfly",
+        target_os = "freebsd",
+        target_os = "fuchsia",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "netbsd",
+        target_vendor = "apple",
+    ))]
+    {
+        keepalive = keepalive.with_retries(retries);
+    }
+
+    trace!(
+        "Set TCP keepalive idle={:?}, interval={:?}, retries={}",
+        keepalive_duration,
+        keepalive_interval,
+        retries
+    );
+
+    Ok(s.set_tcp_keepalive(&keepalive)?)
+}
+
+/// Backward-compatible wrapper that applies default retry probes (3)
 pub fn try_set_tcp_keepalive(
     conn: &TcpStream,
     keepalive_duration: Duration,
     keepalive_interval: Duration,
 ) -> Result<()> {
-    let s = SockRef::from(conn);
-    let keepalive = TcpKeepalive::new()
-        .with_time(keepalive_duration)
-        .with_interval(keepalive_interval);
-
-    trace!(
-        "Set TCP keepalive {:?} {:?}",
+    try_set_tcp_keepalive_with_probes(
+        conn,
         keepalive_duration,
-        keepalive_interval
-    );
+        keepalive_interval,
+        DEFAULT_TCP_KEEPALIVE_RETRIES,
+    )
+}
 
-    Ok(s.set_tcp_keepalive(&keepalive)?)
+/// Configure TCP socket with low-latency TCP_NODELAY and robust keepalive parameters
+/// (idle=10s, interval=3s, retries=3) to detect dropped links within 19s.
+pub fn tune_tcp_socket(conn: &TcpStream) -> Result<()> {
+    conn.set_nodelay(true)?;
+    try_set_tcp_keepalive_with_probes(
+        conn,
+        DEFAULT_TCP_KEEPALIVE_TIME,
+        DEFAULT_TCP_KEEPALIVE_INTERVAL,
+        DEFAULT_TCP_KEEPALIVE_RETRIES,
+    )?;
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -142,5 +193,24 @@ where
         _ = deadline.recv() => {
             Err(anyhow!("shutdown"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_tune_tcp_socket() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client_task = tokio::spawn(async move {
+            tokio::net::TcpStream::connect(addr).await.unwrap()
+        });
+        let (server_sock, _) = listener.accept().await.unwrap();
+        let client_sock = client_task.await.unwrap();
+
+        assert!(tune_tcp_socket(&client_sock).is_ok());
+        assert!(tune_tcp_socket(&server_sock).is_ok());
     }
 }

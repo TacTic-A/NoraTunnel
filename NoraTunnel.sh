@@ -100,6 +100,7 @@ install_dependencies() {
     install_package unzip unzip
     install_package jq jq
     install_package openssl openssl
+    install_package nc netcat-openbsd ncat
     install_package crontab cron cronie cronie
 
     # Ensure cron service is active
@@ -293,9 +294,9 @@ check_port() {
     if [[ -z "$port" ]]; then return 1; fi
 
     if [[ "$proto" == "tcp" ]]; then
-        ss -tlnp "sport = :$port" 2>/dev/null | grep -q ":$port" && return 0 || return 1
+        ss -tlnp "( sport = :$port )" 2>/dev/null | grep -q ":$port" && return 0 || return 1
     elif [[ "$proto" == "udp" ]]; then
-        ss -ulnp "sport = :$port" 2>/dev/null | grep -q ":$port" && return 0 || return 1
+        ss -ulnp "( sport = :$port )" 2>/dev/null | grep -q ":$port" && return 0 || return 1
     else
         return 1
     fi
@@ -872,13 +873,22 @@ tunnel_management() {
     local s_name="noratunnel-${fname}.service"
 
 
+    local has_cron=0
+    if crontab -l 2>/dev/null | grep -q "#$s_name"; then
+        has_cron=1
+    fi
+
     clear
     colorize cyan "Managing Tunnel: $fname" bold
     echo
     colorize red     " 1) Destroy / Remove this tunnel"
     colorize yellow  " 2) Restart this tunnel"
     colorize green   " 3) Add additional port to this tunnel"
-    colorize cyan    " 4) Add automated cron restart schedule"
+    if [[ "$has_cron" -eq 1 ]]; then
+        colorize red     " 4) [WARNING] Remove active legacy cron restart schedule (Recommended)"
+    else
+        colorize gray    " 4) Configure scheduled restart [DEPRECATED - Use Smart Watchdog]"
+    fi
     colorize magenta " 5) Remove cron restart schedule"
     colorize blue    " 6) View live active connections on this tunnel"
     echo -e " 7) View live service logs (journalctl)"
@@ -891,7 +901,13 @@ tunnel_management() {
         1) destroy_tunnel "$selected_cfg" "$s_name" ;;
         2) restart_tunnel_service "$s_name" ;;
         3) add_port_to_tunnel "$selected_cfg" "$s_name" ;;
-        4) add_cron_schedule "$s_name" ;;
+        4)
+            if [[ "$has_cron" -eq 1 ]]; then
+                delete_cron_schedule "$s_name"
+            else
+                add_cron_schedule "$s_name"
+            fi
+            ;;
         5) delete_cron_schedule "$s_name" ;;
         6) 
             local p="${fname#iran}"; p="${p#kharej}"
@@ -1035,6 +1051,23 @@ EOF
 add_cron_schedule() {
     local s_name="$1"
     clear
+    colorize yellow "================ WARNING: DEPRECATED WORKAROUND ================" bold
+    colorize red    "[!] Scheduled crontab restarts are DEPRECATED and actively discouraged!" bold
+    echo
+    echo "  1. Blind restarts sever active V2Ray TCP connections, disrupting user downloads"
+    echo "     and video streams."
+    echo "  2. Uncoordinated restarts between Iran and Kharej trigger out-of-phase restart storms."
+    echo "  3. The autonomous Smart Watchdog (noratunnel-watchdog.service) continuously monitors"
+    echo "     socket state, Send-Q progress, and heals genuine blackholes without killing healthy traffic."
+    echo
+    read -p "Are you sure you want to proceed with a legacy cron restart schedule? (y/N): " force_cron
+    if [[ "$force_cron" != "y" && "$force_cron" != "Y" ]]; then
+        colorize green "Recommended choice: Relying on Smart Watchdog for self-healing." bold
+        press_key
+        return 0
+    fi
+
+    echo
     colorize cyan "Choose Restart Schedule Interval:" bold
     echo
     echo " 1) Every 30 minutes"
@@ -1075,7 +1108,7 @@ EOF
     crontab "$tmp_cron"
     rm -f "$tmp_cron"
 
-    colorize green "Scheduled restart configured cleanly for $s_name." bold
+    colorize yellow "[WARNING] Legacy crontab restart configured for $s_name." bold
     press_key
 }
 
@@ -1087,12 +1120,21 @@ delete_cron_schedule() {
     sleep 1
 }
 
+purge_all_legacy_crons() {
+    if crontab -l 2>/dev/null | grep -q "#noratunnel"; then
+        colorize yellow "[!] Conflicting legacy crontab restart schedules detected. Purging..."
+        crontab -l 2>/dev/null | grep -v "#noratunnel" | crontab - 2>/dev/null || true
+        rm -f "${CONFIG_DIR}"/noratunnel*.sh 2>/dev/null || true
+        colorize green "[+] Conflicting legacy crontab schedules successfully removed."
+    fi
+}
+
 view_active_connections() {
     local port="$1"
     clear
     colorize cyan "Active TCP Connections on Port $port:" bold
     echo
-    ss -tnp "sport = :$port" 2>/dev/null || ss -tanp | grep ":$port" || echo "No active connections detected."
+    ss -tnp "( sport = :$port )" 2>/dev/null || ss -tanp 2>/dev/null | grep ":$port" || echo "No active connections detected."
     press_key
 }
 
@@ -1190,8 +1232,145 @@ LOG_TAG="NoraWatchdog"
 STATE_DIR="/run/noratunnel"
 mkdir -p "$STATE_DIR"
 
+# Watchdog Cooldown & Circuit Breaker Policy Constants
+RESTART_WINDOW=1800   # 30-minute sliding window
+MAX_RESTARTS=3        # Max 3 automatic restarts per window
+COOLDOWN_SECS=300     # 5-minute minimum cooldown between restarts
+HALF_OPEN_PROBE=900   # 15-minute wait before half-open probe when tripped
+
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $LOG_TAG: $1"
+}
+
+# Collect socket snapshot indexed by 4-tuple and inode (POSIX / mawk / gawk compatible)
+collect_socket_snapshot() {
+    local port_filter="$1"
+    ss -Htoniep state established "$port_filter" 2>/dev/null | awk '
+    function parse_and_print(r) {
+        if (r == "") return;
+        n = split(r, f);
+        if (n < 5) return;
+        
+        send_q = f[3];
+        l_addr = f[4];
+        r_addr = f[5];
+        
+        inode = "0";
+        if (match(r, /ino:[0-9]+/)) {
+            inode = substr(r, RSTART + 4, RLENGTH - 4);
+        }
+        
+        timer = "none";
+        if (match(r, /timer:\([^,)]+/)) {
+            timer = substr(r, RSTART + 7, RLENGTH - 7);
+        }
+        
+        bytes_acked = "0";
+        if (match(r, /bytes_acked:[0-9]+/)) {
+            bytes_acked = substr(r, RSTART + 12, RLENGTH - 12);
+        }
+        
+        print l_addr "|" r_addr "|" inode "|" send_q "|" timer "|" bytes_acked;
+    }
+    
+    # Non-indented line indicates a new socket entry
+    /^[^\t ]/ {
+        parse_and_print(rec);
+        rec = $0;
+        next;
+    }
+    
+    # Indented continuation line contains extended TCP info
+    {
+        rec = rec " " $0;
+    }
+    
+    END {
+        parse_and_print(rec);
+    }
+    '
+}
+
+# Evaluate sustained zero-progress across intervals so active v2ray transfers are not killed
+evaluate_tunnel_health() {
+    local port_filter="$1"
+    local sample1 sample2
+    
+    sample1=$(collect_socket_snapshot "$port_filter")
+    if [[ -z "$sample1" ]]; then
+        echo "NO_SOCKETS"
+        return
+    fi
+    
+    # If all sockets have Send-Q == 0, tunnel has clear capacity
+    local has_buffered=0
+    while IFS="|" read -r l_addr r_addr inode send_q timer bytes_acked; do
+        if [[ "$send_q" =~ ^[0-9]+$ ]] && (( send_q > 0 )); then
+            has_buffered=1
+            break
+        fi
+    done <<< "$sample1"
+    
+    if (( has_buffered == 0 )); then
+        echo "HEALTHY"
+        return
+    fi
+    
+    # Sample again after a 5s evaluation window to check progress
+    sleep 5
+    sample2=$(collect_socket_snapshot "$port_filter")
+    
+    local total_correlated=0
+    local stalled_sockets=0
+    local active_progress_found=0
+    
+    declare -A s2_sendq s2_timer s2_acked
+    while IFS="|" read -r l_addr r_addr inode send_q timer bytes_acked; do
+        [[ -n "$l_addr" ]] || continue
+        local key="${l_addr}_${r_addr}_${inode}"
+        s2_sendq["$key"]="$send_q"
+        s2_timer["$key"]="$timer"
+        s2_acked["$key"]="$bytes_acked"
+    done <<< "$sample2"
+    
+    while IFS="|" read -r l_addr r_addr inode send_q1 timer1 acked1; do
+        [[ -n "$l_addr" ]] || continue
+        local key="${l_addr}_${r_addr}_${inode}"
+        if [[ -n "${s2_sendq[$key]:-}" ]]; then
+            total_correlated=$(( total_correlated + 1 ))
+            local send_q2="${s2_sendq[$key]}"
+            local timer2="${s2_timer[$key]}"
+            local acked2="${s2_acked[$key]}"
+            
+            [[ "$acked1" =~ ^[0-9]+$ ]] || acked1=0
+            [[ "$acked2" =~ ^[0-9]+$ ]] || acked2=0
+            [[ "$send_q1" =~ ^[0-9]+$ ]] || send_q1=0
+            [[ "$send_q2" =~ ^[0-9]+$ ]] || send_q2=0
+
+            if (( acked2 > acked1 || send_q2 != send_q1 || send_q2 == 0 )); then
+                active_progress_found=1
+            elif [[ "$timer2" == "persist" ]]; then
+                # ZERO WINDOW PROBE DETECTED: client paused reading (e.g. mobile device sleep)
+                continue
+            elif (( send_q2 > 0 && send_q2 == send_q1 )); then
+                stalled_sockets=$(( stalled_sockets + 1 ))
+            fi
+        fi
+    done <<< "$sample1"
+    
+    # Rule 1: Any socket making progress means tunnel is functioning
+    if (( active_progress_found == 1 )); then
+        echo "HEALTHY"
+        return
+    fi
+    
+    # Rule 2: Total blackhole only when 100% of correlated sockets are stalled
+    if (( total_correlated > 0 && stalled_sockets == total_correlated )); then
+        echo "TOTAL_BLACKHOLE"
+        return
+    fi
+    
+    echo "HEALTHY"
 }
 
 for cfg in "$CONFIG_DIR"/iran*.toml "$CONFIG_DIR"/kharej*.toml; do
@@ -1218,27 +1397,35 @@ for cfg in "$CONFIG_DIR"/iran*.toml "$CONFIG_DIR"/kharej*.toml; do
 
     is_healthy=1
     reason=""
+    conn_count=0
 
     if [[ "$fname" =~ ^iran ]]; then
         # ----------------- IRAN SERVER (REVERSE LISTENER) -----------------
         tunnel_port="${fname#iran}"
+        port_filter="( sport = :${tunnel_port} )"
 
         # 1. Check if daemon is listening on the main tunnel port
-        if ! ss -tlnp 2>/dev/null | grep -q ":${tunnel_port} "; then
+        if ! ss -tlnp "$port_filter" 2>/dev/null | grep -qE ":${tunnel_port}\b"; then
             is_healthy=0
             reason="Daemon not listening on tunnel port $tunnel_port"
         else
-            # 2. Check established connections from Kharej client
-            conn_count=$(ss -Htn "sport = :$tunnel_port" state established 2>/dev/null | wc -l)
+            # 2. Check established connections from Kharej client using standard ss syntax
+            daemon_pid=$(systemctl show -p MainPID --value "$s_name" 2>/dev/null)
+            if [[ "$daemon_pid" =~ ^[0-9]+$ ]] && (( daemon_pid > 1 )); then
+                conn_count=$(ss -Htnp state established "$port_filter" 2>/dev/null | grep -E "pid=${daemon_pid}\b" | wc -l)
+            else
+                conn_count=$(ss -Htn state established "$port_filter" 2>/dev/null | wc -l)
+            fi
+
             if [[ "$conn_count" -eq 0 ]]; then
                 is_healthy=0
                 reason="No active client connection established from Kharej on port $tunnel_port"
             else
-                # 3. Check for zombie/blackholed TCP sockets with accumulated Send-Q
-                stuck_sendq=$(ss -Htn "sport = :$tunnel_port" state established 2>/dev/null | awk '$3 > 80000 {print $3}' | head -n1)
-                if [[ -n "$stuck_sendq" ]]; then
+                # 3. Check Send-Q progress across sample interval (Single-stream stall & Zero-window isolation)
+                sq_health=$(evaluate_tunnel_health "$port_filter")
+                if [[ "$sq_health" == "TOTAL_BLACKHOLE" ]]; then
                     is_healthy=0
-                    reason="Zombie TCP socket detected with stuck Send-Q ($stuck_sendq bytes) on port $tunnel_port"
+                    reason="All established TCP sockets on port $tunnel_port are stalled with un-ACKed Send-Q (carrier blackhole)"
                 fi
             fi
         fi
@@ -1252,46 +1439,117 @@ for cfg in "$CONFIG_DIR"/iran*.toml "$CONFIG_DIR"/kharej*.toml; do
         remote_ip=$(echo "$remote_addr_full" | sed -E 's/:[0-9]+$//; s/^\[//; s/\]$//')
         remote_port=$(echo "$remote_addr_full" | sed -E 's/.*:([0-9]+)$/\1/')
 
-        if [[ -n "$remote_ip" && -n "$remote_port" ]]; then
-            # 1. Test reachability to Iran server via direct TCP handshake
-            if timeout 3 bash -c "</dev/tcp/${remote_ip}/${remote_port}" 2>/dev/null; then
-                # Iran server port is reachable. Now verify if our tunnel client has an active connection
-                conn_count=$(ss -Htn "dst ${remote_ip}:${remote_port}" state established 2>/dev/null | wc -l)
-                if [[ "$conn_count" -eq 0 ]]; then
+        if [[ -n "$remote_port" ]]; then
+            port_filter="( dport = :${remote_port} )"
+
+            # Check established connections using standard ss syntax and PID correlation
+            daemon_pid=$(systemctl show -p MainPID --value "$s_name" 2>/dev/null)
+            if [[ "$daemon_pid" =~ ^[0-9]+$ ]] && (( daemon_pid > 1 )); then
+                conn_count=$(ss -Htnp state established "$port_filter" 2>/dev/null | grep -E "pid=${daemon_pid}\b" | wc -l)
+            else
+                conn_count=$(ss -Htn state established "$port_filter" 2>/dev/null | wc -l)
+            fi
+
+            if [[ "$conn_count" -gt 0 ]]; then
+                # ACTIVE CONNECTION CONFIRMED:
+                # Do NOT probe /dev/tcp (avoids spurious Noise handshake errors on Iran server)
+                # Delegate Send-Q evaluation to progress tracker
+                sq_health=$(evaluate_tunnel_health "$port_filter")
+                if [[ "$sq_health" == "TOTAL_BLACKHOLE" ]]; then
+                    is_healthy=0
+                    reason="Connection to Iran has sustained 100% stalled Send-Q across sample intervals (carrier blackhole)"
+                fi
+            else
+                # NO ACTIVE CONNECTION:
+                # Verify network reachability before declaring daemon stalled (avoids restarting during network outages)
+                is_reachable=1
+                if command -v nc >/dev/null 2>&1; then
+                    nc -z -w 3 "$remote_ip" "$remote_port" >/dev/null 2>&1 || is_reachable=0
+                elif [[ "$remote_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    timeout 3 bash -c "</dev/tcp/${remote_ip}/${remote_port}" 2>/dev/null || is_reachable=0
+                fi
+
+                if [[ "$is_reachable" -eq 1 ]]; then
                     is_healthy=0
                     reason="Iran ($remote_ip:$remote_port) is reachable, but noratunnel has NO established connection (stalled daemon)"
                 else
-                    # 2. Check for zombie socket with stuck Send-Q
-                    stuck_sendq=$(ss -Htn "dst ${remote_ip}:${remote_port}" state established 2>/dev/null | awk '$3 > 80000 {print $3}' | head -n1)
-                    if [[ -n "$stuck_sendq" ]]; then
-                        is_healthy=0
-                        reason="Connection to Iran has stuck un-ACKed Send-Q ($stuck_sendq bytes)"
-                    fi
+                    log "Iran server ${remote_ip}:${remote_port} unreachable over network. Skipping restart to prevent flapping."
                 fi
-            else
-                log "Iran server ${remote_ip}:${remote_port} unreachable via TCP. Network down, skipping restart to prevent flapping."
             fi
         fi
 
         # 3. Check recent logs for persistent heartbeat timeout loops without successful recovery
-        recent_hb_errs=$(journalctl -u "$s_name" -n 15 --no-pager 2>/dev/null | grep -iE "heartbeat timed out|failed to run the control channel" | wc -l)
-        recent_ok=$(journalctl -u "$s_name" -n 5 --no-pager 2>/dev/null | grep -i "control channel established" | wc -l)
-        if [[ "$recent_hb_errs" -ge 3 && "$recent_ok" -eq 0 ]]; then
-            is_healthy=0
-            reason="Recent logs indicate continuous control channel timeout loop without recovery"
+        # (Time-bounded query; strictly inside conn_count == 0 so established sockets always take precedence)
+        if [[ "$conn_count" -eq 0 && "${is_reachable:-1}" -eq 1 ]]; then
+            recent_hb_errs=$(journalctl -u "$s_name" --since "90 seconds ago" --no-pager 2>/dev/null | grep -iE "heartbeat timed out|failed to run the control channel" | wc -l)
+            recent_ok=$(journalctl -u "$s_name" --since "90 seconds ago" --no-pager 2>/dev/null | grep -i "control channel established" | wc -l)
+            if [[ "$recent_hb_errs" -ge 3 && "$recent_ok" -eq 0 ]]; then
+                is_healthy=0
+                reason="Recent logs (past 90s) indicate continuous control channel timeout loop without recovery"
+            fi
         fi
     fi
 
     # ----------------- HEALTH DECISION & SELF-HEALING -----------------
+    restart_log="${STATE_DIR}/${fname}.restarts"
+    healthy_streak_file="${STATE_DIR}/${fname}.healthy"
+
     if [[ "$is_healthy" -eq 0 ]]; then
+        # Reset healthy streak upon any health check failure
+        echo 0 > "$healthy_streak_file"
+
         current_fails=$(( current_fails + 1 ))
         echo "$current_fails" > "$fail_counter_file"
         log "[WARNING] $s_name health check failed ($current_fails/2): $reason"
 
-        # Require 2 consecutive failed cycles (45s * 2 = 90s) before restarting to avoid false positives on transient blips
+        # Require 2 consecutive failed cycles (45s * 2 = 90s) before evaluating restart
         if [[ "$current_fails" -ge 2 ]]; then
-            log "[HEALING] $s_name failed 2 consecutive health checks. Forcefully restarting service to revive tunnel..."
+            now=$(date +%s)
+
+            # 1. Prune sliding window (discard timestamps older than 1800s / 30m)
+            valid_restarts=()
+            if [[ -f "$restart_log" ]]; then
+                while IFS= read -r ts; do
+                    if [[ "$ts" =~ ^[0-9]+$ ]] && (( now - ts <= RESTART_WINDOW )); then
+                        valid_restarts+=("$ts")
+                    fi
+                done < "$restart_log"
+                if (( ${#valid_restarts[@]} > 0 )); then
+                    printf "%s\n" "${valid_restarts[@]}" > "$restart_log"
+                else
+                    rm -f "$restart_log"
+                fi
+            fi
+            recent_count=${#valid_restarts[@]}
+
+            # 2. Minimum 300s (5-minute) Cooldown Check
+            if (( recent_count > 0 )); then
+                last_restart="${valid_restarts[$(( recent_count - 1 ))]}"
+                elapsed=$(( now - last_restart ))
+                if (( elapsed < COOLDOWN_SECS )); then
+                    remaining=$(( COOLDOWN_SECS - elapsed ))
+                    log "[COOLDOWN] $s_name restarted ${elapsed}s ago (< ${COOLDOWN_SECS}s). Automatic restart suppressed (${remaining}s cooldown remaining)."
+                    continue
+                fi
+            fi
+
+            # 3. Sliding-Window Circuit Breaker (Max 3 restarts per 30m, 900s half-open probe)
+            if (( recent_count >= MAX_RESTARTS )); then
+                last_restart="${valid_restarts[$(( recent_count - 1 ))]}"
+                elapsed=$(( now - last_restart ))
+                if (( elapsed < HALF_OPEN_PROBE )); then
+                    probe_remaining=$(( HALF_OPEN_PROBE - elapsed ))
+                    log "[CIRCUIT_BREAKER] $s_name tripped ($recent_count restarts in 30m). Circuit breaker is OPEN. Next half-open probe in ${probe_remaining}s."
+                    continue
+                else
+                    log "[CIRCUIT_BREAKER] $s_name entering HALF-OPEN state: attempting single recovery restart to test network availability."
+                fi
+            fi
+
+            # 4. Execute Self-Healing Restart
+            log "[HEALING] $s_name failed 2 consecutive health checks. Forcefully restarting service (Restart $((recent_count + 1)) in sliding window)..."
             systemctl restart "$s_name"
+            echo "$now" >> "$restart_log"
             echo 0 > "$fail_counter_file"
             sleep 2
         fi
@@ -1299,6 +1557,21 @@ for cfg in "$CONFIG_DIR"/iran*.toml "$CONFIG_DIR"/kharej*.toml; do
         if [[ "$current_fails" -gt 0 ]]; then
             echo 0 > "$fail_counter_file"
             log "[RECOVERED] $s_name is verified healthy and active."
+        fi
+
+        # Track sustained health streak (3 consecutive cycles = 135s)
+        healthy_streak=$(cat "$healthy_streak_file" 2>/dev/null || echo 0)
+        [[ "$healthy_streak" =~ ^[0-9]+$ ]] || healthy_streak=0
+        healthy_streak=$(( healthy_streak + 1 ))
+        echo "$healthy_streak" > "$healthy_streak_file"
+
+        # Auto-reset Circuit Breaker to CLOSED on sustained health (135s+)
+        if (( healthy_streak >= 3 )) && [[ -f "$restart_log" ]]; then
+            prev_restarts=$(wc -l < "$restart_log" 2>/dev/null || echo 0)
+            if (( prev_restarts > 0 )); then
+                rm -f "$restart_log"
+                log "[CIRCUIT_BREAKER] $s_name sustained health verified (135s+). Circuit breaker reset to CLOSED."
+            fi
         fi
     fi
 done
@@ -1344,6 +1617,14 @@ manage_watchdog_menu() {
     case "$w_opt" in
         1)
             setup_watchdog_script
+            if crontab -l 2>/dev/null | grep -q "#noratunnel"; then
+                echo
+                colorize yellow "[!] Conflicting legacy crontab restart schedules detected." bold
+                read -p "Do you want to purge conflicting legacy crontab entries now? (Y/n): " purge_choice
+                if [[ "$purge_choice" != "n" && "$purge_choice" != "N" ]]; then
+                    purge_all_legacy_crons
+                fi
+            fi
             systemctl enable --now "noratunnel-watchdog.service" >/dev/null 2>&1
             colorize green "NoraTunnel Watchdog daemon enabled and running." bold
             press_key
@@ -1521,7 +1802,7 @@ display_main_menu() {
     echo
     echo -e "${DARK_GRAY}┌── CORE TUNNELING ──────────────────────────────────────────────${NC}"
     echo -e "${DARK_GRAY}│${NC}  ${BOLD}${BLUE}[ 1 ]${NC}  ${WHITE}Configure a New Tunnel${NC}        ${GRAY}Setup Iran or Kharej bridge${NC}"
-    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${CYAN}[ 2 ]${NC}  ${WHITE}Tunnel Management Menu${NC}        ${GRAY}Ports, Restart, Logs, Cron${NC}"
+    echo -e "${DARK_GRAY}│${NC}  ${BOLD}${CYAN}[ 2 ]${NC}  ${WHITE}Tunnel Management Menu${NC}        ${GRAY}Ports, Restart, Logs, Cron (Deprecated)${NC}"
     echo -e "${DARK_GRAY}│${NC}  ${BOLD}${GREEN}[ 3 ]${NC}  ${WHITE}Live Status Dashboard${NC}         ${GRAY}Inspect sockets & daemons${NC}"
     echo -e "${DARK_GRAY}│${NC}"
     echo -e "${DARK_GRAY}├── RELIABILITY & DIAGNOSTICS ───────────────────────────────────${NC}"

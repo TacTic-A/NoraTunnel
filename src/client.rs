@@ -190,7 +190,7 @@ async fn do_data_channel_handshake<T: Transport>(
             args.connector
                 .connect(&args.remote_addr)
                 .await
-                .with_context(|| format!("Failed to connect to {}", &args.remote_addr))
+                .with_context(|| format!("Failed to connect to {}", args.remote_addr))
                 .map_err(backoff::Error::transient)
         },
         |e, duration| {
@@ -243,6 +243,12 @@ async fn run_data_channel_for_tcp<T: Transport>(
     let mut local = TcpStream::connect(local_addr)
         .await
         .with_context(|| format!("Failed to connect to {}", local_addr))?;
+
+    // Apply TCP_NODELAY and robust keepalives on the local v2ray socket
+    if let Err(e) = crate::helper::tune_tcp_socket(&local) {
+        warn!("Failed to tune TCP socket for local addr {}: {:#}", local_addr, e);
+    }
+
     let _ = copy_bidirectional(&mut conn, &mut local).await;
     Ok(())
 }
@@ -409,7 +415,7 @@ impl<T: 'static + Transport> ControlChannel<T> {
             .transport
             .connect(&remote_addr)
             .await
-            .with_context(|| format!("Failed to connect to {}", &self.remote_addr))?;
+            .with_context(|| format!("Failed to connect to {}", self.remote_addr))?;
         T::hint(&conn, SocketOpts::for_control_channel());
 
         // Send hello
@@ -466,7 +472,7 @@ impl<T: 'static + Transport> ControlChannel<T> {
             tokio::select! {
                 val = read_control_cmd(&mut conn) => {
                     let val = val?;
-                    debug!( "Received {:?}", val);
+                    debug!("Received {:?}", val);
                     match val {
                         ControlChannelCmd::CreateDataChannel => {
                             let args = data_ch_args.clone();
@@ -476,7 +482,21 @@ impl<T: 'static + Transport> ControlChannel<T> {
                                 }
                             }.instrument(Span::current()));
                         },
-                        ControlChannelCmd::HeartBeat => ()
+                        ControlChannelCmd::HeartBeat => {
+                            trace!("Received HeartBeat from server; transmitting HeartBeatAck");
+                            let ack = bincode::serialize(&ControlChannelCmd::HeartBeatAck).unwrap();
+                            if let Err(e) = conn.write_all(&ack).await {
+                                warn!("Failed to write HeartBeatAck: {:#}", e);
+                                break;
+                            }
+                            if let Err(e) = conn.flush().await {
+                                warn!("Failed to flush HeartBeatAck: {:#}", e);
+                                break;
+                            }
+                        },
+                        ControlChannelCmd::HeartBeatAck => {
+                            trace!("Received HeartBeatAck on client; ignoring");
+                        }
                     }
                 },
                 _ = time::sleep(Duration::from_secs(self.heartbeat_timeout)), if self.heartbeat_timeout != 0 => {

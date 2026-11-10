@@ -46,10 +46,11 @@ impl std::fmt::Display for Ack {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub enum ControlChannelCmd {
     CreateDataChannel,
     HeartBeat,
+    HeartBeatAck,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -112,8 +113,7 @@ impl UdpTraffic {
     }
 
     pub async fn read<T: AsyncRead + Unpin>(reader: &mut T, hdr_len: u8) -> Result<UdpTraffic> {
-        let mut buf = Vec::new();
-        buf.resize(hdr_len as usize, 0);
+        let mut buf = vec![0u8; hdr_len as usize];
         reader
             .read_exact(&mut buf)
             .await
@@ -215,7 +215,7 @@ pub async fn read_auth<T: AsyncRead + AsyncWrite + Unpin>(conn: &mut T) -> Resul
     bincode::deserialize(&buf).with_context(|| "Failed to deserialize auth")
 }
 
-pub async fn read_ack<T: AsyncRead + AsyncWrite + Unpin>(conn: &mut T) -> Result<Ack> {
+pub async fn read_ack<T: AsyncRead + Unpin>(conn: &mut T) -> Result<Ack> {
     let mut bytes = vec![0u8; PACKET_LEN.ack];
     conn.read_exact(&mut bytes)
         .await
@@ -223,7 +223,7 @@ pub async fn read_ack<T: AsyncRead + AsyncWrite + Unpin>(conn: &mut T) -> Result
     bincode::deserialize(&bytes).with_context(|| "Failed to deserialize ack")
 }
 
-pub async fn read_control_cmd<T: AsyncRead + AsyncWrite + Unpin>(
+pub async fn read_control_cmd<T: AsyncRead + Unpin>(
     conn: &mut T,
 ) -> Result<ControlChannelCmd> {
     let mut bytes = vec![0u8; PACKET_LEN.c_cmd];
@@ -233,7 +233,7 @@ pub async fn read_control_cmd<T: AsyncRead + AsyncWrite + Unpin>(
     bincode::deserialize(&bytes).with_context(|| "Failed to deserialize control cmd")
 }
 
-pub async fn read_data_cmd<T: AsyncRead + AsyncWrite + Unpin>(
+pub async fn read_data_cmd<T: AsyncRead + Unpin>(
     conn: &mut T,
 ) -> Result<DataChannelCmd> {
     let mut bytes = vec![0u8; PACKET_LEN.d_cmd];
@@ -241,4 +241,24 @@ pub async fn read_data_cmd<T: AsyncRead + AsyncWrite + Unpin>(
         .await
         .with_context(|| "Failed to read cmd")?;
     bincode::deserialize(&bytes).with_context(|| "Failed to deserialize data cmd")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_heartbeat_ack_serialization_and_packet_len() {
+        let create = bincode::serialize(&ControlChannelCmd::CreateDataChannel).unwrap();
+        let hb = bincode::serialize(&ControlChannelCmd::HeartBeat).unwrap();
+        let ack = bincode::serialize(&ControlChannelCmd::HeartBeatAck).unwrap();
+
+        assert_eq!(create.len(), PACKET_LEN.c_cmd);
+        assert_eq!(hb.len(), PACKET_LEN.c_cmd);
+        assert_eq!(ack.len(), PACKET_LEN.c_cmd);
+        assert_eq!(ack.len(), 4);
+
+        let deserialized: ControlChannelCmd = bincode::deserialize(&ack).unwrap();
+        assert_eq!(deserialized, ControlChannelCmd::HeartBeatAck);
+    }
 }

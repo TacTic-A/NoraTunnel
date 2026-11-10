@@ -9,18 +9,42 @@ async fn main() -> Result<()> {
     let args = Cli::parse();
 
     let (shutdown_tx, shutdown_rx) = broadcast::channel::<bool>(1);
-    tokio::spawn(async move {
-        if let Err(e) = signal::ctrl_c().await {
-            // Something really weird happened. So just panic
-            panic!("Failed to listen for the ctrl-c signal: {:?}", e);
-        }
 
-        if let Err(e) = shutdown_tx.send(true) {
-            // shutdown signal must be catched and handle properly
-            // `rx` must not be dropped
-            panic!("Failed to send shutdown signal: {:?}", e);
-        }
-    });
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler");
+        tokio::spawn(async move {
+            tokio::select! {
+                res = signal::ctrl_c() => {
+                    match res {
+                        Ok(()) => tracing::info!("Received SIGINT (Ctrl+C), initiating graceful shutdown"),
+                        Err(e) => tracing::error!("Failed to listen for SIGINT: {:?}", e),
+                    }
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM from systemd, initiating graceful shutdown");
+                }
+            }
+            if let Err(e) = shutdown_tx.send(true) {
+                tracing::warn!("Failed to broadcast shutdown signal: {:?}", e);
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::spawn(async move {
+            if let Err(e) = signal::ctrl_c().await {
+                tracing::error!("Failed to listen for ctrl-c signal: {:?}", e);
+            } else {
+                tracing::info!("Received Ctrl+C, initiating graceful shutdown");
+            }
+            if let Err(e) = shutdown_tx.send(true) {
+                tracing::warn!("Failed to broadcast shutdown signal: {:?}", e);
+            }
+        });
+    }
 
     #[cfg(feature = "console")]
     {
